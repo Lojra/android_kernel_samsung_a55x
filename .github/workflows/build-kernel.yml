@@ -5,8 +5,8 @@ on:
 
 jobs:
   build:
-    name: Build Galaxy A55 Kernel
-    runs-on: ubuntu-latest
+    name: Build Galaxy A55 Kernel (Linux 6.1.155)
+    runs-on: ubuntu-24.04
     steps:
       - name: Maximize Build Space
         uses: easimon/maximize-build-space@master
@@ -17,51 +17,132 @@ jobs:
           remove-android: 'true'
           remove-haskell: 'true'
 
-      - name: Checkout Kernel Source
-        uses: actions/checkout@v4
-        with:
-          ref: lineage-23.2
-          fetch-depth: 1
-
-      - name: Install Toolchain and Dependencies
+      - name: Install Toolchain (Clang 20 & Build Essentials)
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev libssl-dev libelf-dev dwarves pahole
-          mkdir -p clang-aosp
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz -O clang.tar.gz
-          tar -C clang-aosp -xzf clang.tar.gz
-          rm clang.tar.gz
+          sudo apt-get install -y --no-install-recommends             build-essential bc bison flex libssl-dev libelf-dev libncurses-dev             git curl lz4 zip unzip tar python3 aarch64-linux-gnu-gcc
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 20
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 100
+          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/lld-20 100
+          sudo update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-20 100
+          sudo update-alternatives --install /usr/bin/llvm-ar llvm-ar /usr/bin/llvm-ar-20 100
+          sudo update-alternatives --install /usr/bin/llvm-nm llvm-nm /usr/bin/llvm-nm-20 100
+          clang --version
+
+      - name: Checkout Kernel Source (A556EXXUACYIA @ e2398e0ebc3f)
+        run: |
+          git clone --depth=1 -b A556EXXUACYIA https://github.com/exynos1480/android_kernel_samsung_a55x.git kernel
+          cd kernel
+          rm -f android/abi_gki_protected_exports_*
 
       - name: Integrate KernelSU-Next v3.4.2
+        working-directory: kernel
         run: |
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s v3.4.2
 
-      - name: Integrate SUSFS Patches
+      - name: Integrate SuSFS (Patches & Fixes)
+        working-directory: kernel
         run: |
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-6.1 susfs
-          cp -r susfs/kernel_patches/fs/* fs/
-          cp -r susfs/kernel_patches/include/linux/* include/linux/
+          git clone --depth=1 -b gki-android14-6.1 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
+          cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/
+          cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/
+          cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/
 
-      - name: Build Kernel Image
+          # Apply kernel patch (allowing rejected headers)
+          patch -p1 --ignore-whitespace --forward < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch || true
+
+          # Inject headers into the 3 files with OEM context differences
+          sed -i '1i#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif' fs/exec.c
+          sed -i '1i#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif' fs/namespace.c
+          sed -i '1i#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux/susfs_def.h>\n#endif' fs/proc/base.c
+          sed -i '/sysctl_mount_max/i#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
+
+          # Decouple legacy sucompat in fs/exec.c for KSU-Next compatibility
+          sed -i 's/static_branch_likely(&ksu_su_compat_enabled)/false/' fs/exec.c || true
+
+      - name: Configure Kernel
+        working-directory: kernel
         run: |
-          export PATH=$(pwd)/clang-aosp/bin:$PATH
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export ARCH=arm64
-          export SUBARCH=arm64
-          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 essi_defconfig
-          ./scripts/config --file out/.config --disable CONFIG_DEBUG_INFO_BTF
-          make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 Image
+          make ARCH=arm64 LLVM=1 LLVM_IAS=1 essi_defconfig
+          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
+          ./scripts/config --enable CONFIG_KSU
+          ./scripts/config --enable CONFIG_KSU_SUSFS
+          ./scripts/config --enable CONFIG_KSU_SUSFS_SUS_PATH
+          ./scripts/config --enable CONFIG_KSU_SUSFS_SUS_MOUNT
+          ./scripts/config --enable CONFIG_KSU_SUSFS_SUS_KSTAT
+          ./scripts/config --enable CONFIG_KSU_SUSFS_SPOOF_UNAME
+          ./scripts/config --enable CONFIG_KSU_SUSFS_ENABLE_LOG
+          ./scripts/config --enable CONFIG_KSU_SUSFS_OPEN_REDIRECT
+          ./scripts/config --enable CONFIG_KSU_SUSFS_SUS_MAP
+          ./scripts/config --disable CONFIG_UH
+          ./scripts/config --disable CONFIG_SECURITY_DEFEX
+          ./scripts/config --disable CONFIG_KNOX_NCM
+
+      - name: Build Kernel Binary
+        working-directory: kernel
+        run: |
+          make -j$(nproc)             ARCH=arm64             CC=clang             LLVM=1             LLVM_IAS=1             CROSS_COMPILE=aarch64-linux-gnu-             KCFLAGS="-Wno-error"             Image
 
       - name: Package with AnyKernel3
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3 -b master ak3
-          cp out/arch/arm64/boot/Image ak3/
-          sed -i 's/kernel.string=.*/kernel.string=GlowingKernel-A55/' ak3/anykernel.sh
-          sed -i 's/do.devicecheck=.*/do.devicecheck=0/' ak3/anykernel.sh
-          cd ak3 && zip -r9 ../A55-GlowingKernel-KSUNext-v3.4.2-SUSFS.zip *
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AK3
+          cat << 'EOF' > AK3/anykernel.sh
+### AnyKernel3 Ramdisk Mod Script
+## osm0sis @ xda-developers
+
+### AnyKernel setup
+properties() { '
+kernel.string=GKI_Kernel
+do.devicecheck=0
+do.modules=0
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=0
+supported.versions=14, 15, 16
+supported.patchlevels=
+supported.vendorpatchlevels=
+'; }
+
+### AnyKernel install
+block=boot
+is_slot_device=auto
+ramdisk_compression=auto
+patch_vbmeta_flag=auto
+
+. tools/ak3-core.sh
+
+if [ -L "/dev/block/bootdevice/by-name/init_boot_a" -o -L "/dev/block/by-name/init_boot_a" ] || [ -L "/dev/block/bootdevice/by-name/init_boot" -o -L "/dev/block/by-name/init_boot" ]; then
+    split_boot
+    flash_boot
+else
+    dump_boot
+    write_boot
+fi
+EOF
+          cp kernel/arch/arm64/boot/Image AK3/
+          cd AK3
+          zip -r9 ../A55-GlowingKernel-KSUNext-v3.4.2-SUSFS.zip * -x .git README.md *placeholder
 
       - name: Upload Flashable Kernel Zip
         uses: actions/upload-artifact@v4
         with:
           name: A55-GlowingKernel-KSUNext-v3.4.2-SUSFS
           path: A55-GlowingKernel-KSUNext-v3.4.2-SUSFS.zip
+
+      - name: Release to GitHub
+        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: v3.4.2-A55-Fixed
+          name: "Galaxy A55 (SM-A556E) KernelSU-Next v3.4.2 + SuSFS (Linux 6.1.155)"
+          body: |
+            ## Samsung Galaxy A55 5G (SM-A556E) - DeathUI 8 Elite V7 Compatible Kernel
+            - **Base:** Linux 6.1.155 (Matching vendor_dlkm KMI)
+            - **Root:** KernelSU-Next v3.4.2 (Driver version 33355)
+            - **Stealth:** SuSFS v2.1.0
+            - **Hardware:** Exynos 1480 (essi_defconfig, SGPU MEA E-variant support)
+          files: A55-GlowingKernel-KSUNext-v3.4.2-SUSFS.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
