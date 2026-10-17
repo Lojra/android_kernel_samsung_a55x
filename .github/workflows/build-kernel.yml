@@ -35,92 +35,14 @@ jobs:
           cd kernel
           rm -f android/abi_gki_protected_exports_*
 
-      - name: Integrate KernelSU-Next v3.4.2
+      - name: Integrate KernelSU-Next (dev-susfs)
         working-directory: kernel
         run: |
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s v3.4.2
-
-      - name: Integrate SuSFS into Kernel & VFS
-        working-directory: kernel
-        run: |
-          git clone --depth=1 -b gki-android14-6.1 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
-          cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/
-          cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/
-          cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/
-
-          # Add susfs.o compilation rule to fs/Makefile
-          echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
-
-          # Inject SuSFS Kconfig symbols into drivers/kernelsu/Kconfig
-          echo 'config KSU_SUSFS' >> drivers/kernelsu/Kconfig
-          echo '    bool "SuSFS Support for KernelSU-Next"' >> drivers/kernelsu/Kconfig
-          echo '    depends on KSU' >> drivers/kernelsu/Kconfig
-          echo '    default y' >> drivers/kernelsu/Kconfig
-          echo 'config KSU_SUSFS_SUS_PATH' >> drivers/kernelsu/Kconfig
-          echo '    bool "SuSFS hide path"' >> drivers/kernelsu/Kconfig
-          echo '    depends on KSU_SUSFS' >> drivers/kernelsu/Kconfig
-          echo '    default y' >> drivers/kernelsu/Kconfig
-          echo 'config KSU_SUSFS_SUS_MOUNT' >> drivers/kernelsu/Kconfig
-          echo '    bool "SuSFS hide mount"' >> drivers/kernelsu/Kconfig
-          echo '    depends on KSU_SUSFS' >> drivers/kernelsu/Kconfig
-          echo '    default y' >> drivers/kernelsu/Kconfig
-          echo 'config KSU_SUSFS_SUS_KSTAT' >> drivers/kernelsu/Kconfig
-          echo '    bool "SuSFS spoof kstat"' >> drivers/kernelsu/Kconfig
-          echo '    depends on KSU_SUSFS' >> drivers/kernelsu/Kconfig
-          echo '    default y' >> drivers/kernelsu/Kconfig
-          echo 'config KSU_SUSFS_SPOOF_UNAME' >> drivers/kernelsu/Kconfig
-          echo '    bool "SuSFS spoof uname"' >> drivers/kernelsu/Kconfig
-          echo '    depends on KSU_SUSFS' >> drivers/kernelsu/Kconfig
-          echo '    default y' >> drivers/kernelsu/Kconfig
-          echo 'config KSU_SUSFS_ENABLE_LOG' >> drivers/kernelsu/Kconfig
-          echo '    bool "SuSFS enable log"' >> drivers/kernelsu/Kconfig
-          echo '    depends on KSU_SUSFS' >> drivers/kernelsu/Kconfig
-          echo '    default y' >> drivers/kernelsu/Kconfig
-          echo 'config KSU_SUSFS_OPEN_REDIRECT' >> drivers/kernelsu/Kconfig
-          echo '    bool "SuSFS open redirect"' >> drivers/kernelsu/Kconfig
-          echo '    depends on KSU_SUSFS' >> drivers/kernelsu/Kconfig
-          echo '    default y' >> drivers/kernelsu/Kconfig
-          echo 'config KSU_SUSFS_SUS_MAP' >> drivers/kernelsu/Kconfig
-          echo '    bool "SuSFS hide map"' >> drivers/kernelsu/Kconfig
-          echo '    depends on KSU_SUSFS' >> drivers/kernelsu/Kconfig
-          echo '    default y' >> drivers/kernelsu/Kconfig
-
-          # Apply VFS patches
-          patch -p1 --ignore-whitespace --forward < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch || true
-
-          # Inject header includes
-          python3 -c "
-          for path, hdr in [
-              ('fs/exec.c', '#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif\n'),
-              ('fs/namespace.c', '#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif\n'),
-              ('fs/proc/base.c', '#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux/susfs_def.h>\n#endif\n')
-          ]:
-              with open(path, 'r') as f:
-                  c = f.read()
-              if hdr.strip() not in c:
-                  with open(path, 'w') as f:
-                      f.write(hdr + c)
-          "
-
-          # Inject missing namespace declarations
-          python3 -c "
-          with open('fs/namespace.c', 'r') as f:
-              c = f.read()
-          block = '#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif\n'
-          if 'susfs_is_current_ksu_domain' not in c and 'sysctl_mount_max' in c:
-              c = c.replace('int sysctl_mount_max', block + '\nint sysctl_mount_max')
-              with open('fs/namespace.c', 'w') as f:
-                  f.write(c)
-          "
-
-          # Decouple legacy sucompat in fs/exec.c for KSU-Next compatibility
-          python3 -c "
-          with open('fs/exec.c', 'r') as f:
-              c = f.read()
-          c = c.replace('static_branch_likely(&ksu_su_compat_enabled)', 'false')
-          with open('fs/exec.c', 'w') as f:
-              f.write(c)
-          "
+          git clone --depth=1 -b dev-susfs https://github.com/pershoot/KernelSU-Next.git KernelSU-Next
+          cd drivers
+          ln -sf ../KernelSU-Next/kernel kernelsu
+          printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> Makefile
+          sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' Kconfig
 
       - name: Configure Kernel
         working-directory: kernel
@@ -139,15 +61,20 @@ jobs:
           ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_SUS_KSTAT
           ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_SPOOF_UNAME
           ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_ENABLE_LOG
+          ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+          ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
           ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_OPEN_REDIRECT
           ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_SUS_MAP
+          ./scripts/config --file out/.config --enable CONFIG_KSU_SAMSUNG_KDP
+          ./scripts/config --file out/.config --enable CONFIG_KSU_SAMSUNG_RKP
+          ./scripts/config --file out/.config --enable CONFIG_KSU_SAMSUNG_DEFEX
           ./scripts/config --file out/.config --disable CONFIG_UH
           ./scripts/config --file out/.config --disable CONFIG_SECURITY_DEFEX
           ./scripts/config --file out/.config --disable CONFIG_KNOX_NCM
 
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
 
-          echo "=== KSU & SUSFS Config Check ==="
+          echo "=== KSU & SUSFS Config Verification ==="
           grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS" out/.config
 
       - name: Build Kernel Binary
@@ -159,7 +86,7 @@ jobs:
           export SUBARCH=arm64
           make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 KCFLAGS="-Wno-error" Image
 
-          echo "=== Symbol Verification ==="
+          echo "=== Kernel Symbol Verification ==="
           strings out/arch/arm64/boot/Image | grep -i "susfs" | head -n 10
           strings out/arch/arm64/boot/Image | grep -i "kernelsu" | head -n 10
 
@@ -175,19 +102,3 @@ jobs:
         with:
           name: A55-GlowingKernel-KSUNext-v3.4.2-SUSFS
           path: A55-GlowingKernel-KSUNext-v3.4.2-SUSFS.zip
-
-      - name: Release to GitHub
-        uses: softprops/action-gh-release@v2
-        if: github.event_name == 'workflow_dispatch'
-        with:
-          tag_name: v3.4.2-A55-v2
-          name: "Galaxy A55 (SM-A556E) KernelSU-Next v3.4.2 (33355) + SuSFS (Linux 6.1.155)"
-          body: |
-            ## Samsung Galaxy A55 5G (SM-A556E) - DeathUI 8 Elite V7 Compatible Kernel
-            - **Base:** Linux 6.1.155 (Matching vendor_dlkm KMI)
-            - **Defconfig:** essi_defconfig (Exynos 1480 platform drivers)
-            - **Root:** KernelSU-Next v3.4.2 (Driver version 33355)
-            - **Stealth:** SuSFS v2.1.0 (Built-in VFS)
-          files: A55-GlowingKernel-KSUNext-v3.4.2-SUSFS.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
