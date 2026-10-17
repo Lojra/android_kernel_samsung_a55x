@@ -40,37 +40,89 @@ jobs:
         run: |
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s v3.4.2
 
-      - name: Integrate SuSFS Patches
+      - name: Integrate SuSFS into Kernel & VFS
         working-directory: kernel
         run: |
           git clone --depth=1 -b gki-android14-6.1 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
           cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/
           cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/
           cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/
-          patch -p1 --ignore-whitespace --forward < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch || true
-          python3 -c '
-          def prepend_if_missing(filepath, header):
-              with open(filepath, "r") as f: content = f.read()
-              if header not in content:
-                  with open(filepath, "w") as f: f.write(header + "\n" + content)
-          prepend_if_missing("fs/exec.c", "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif")
-          prepend_if_missing("fs/namespace.c", "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif")
-          prepend_if_missing("fs/proc/base.c", "#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux/susfs_def.h>\n#endif")
-          '
-          python3 -c '
-          with open("fs/namespace.c", "r") as f: c = f.read()
-          block = "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif\n"
-          if "susfs_is_current_ksu_domain" not in c and "sysctl_mount_max" in c:
-              c = c.replace("int sysctl_mount_max", block + "\nint sysctl_mount_max")
-              with open("fs/namespace.c", "w") as f: f.write(c)
-          '
-          python3 -c '
-          with open("fs/exec.c", "r") as f: c = f.read()
-          c = c.replace("static_branch_likely(&ksu_su_compat_enabled)", "false")
-          with open("fs/exec.c", "w") as f: f.write(c)
-          '
 
-      - name: Build Kernel Image
+          # Add susfs.o compilation rule to fs/Makefile
+          sed -i '/obj-y.*:=/a obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+
+          # Inject SuSFS Kconfig symbols into drivers/kernelsu/Kconfig
+          echo 'config KSU_SUSFS' >> drivers/kernelsu/Kconfig
+          echo '    bool "SuSFS Support for KernelSU-Next"' >> drivers/kernelsu/Kconfig
+          echo '    depends on KSU' >> drivers/kernelsu/Kconfig
+          echo '    default y' >> drivers/kernelsu/Kconfig
+          echo 'config KSU_SUSFS_SUS_PATH' >> drivers/kernelsu/Kconfig
+          echo '    bool "SuSFS hide path"' >> drivers/kernelsu/Kconfig
+          echo '    depends on KSU_SUSFS' >> drivers/kernelsu/Kconfig
+          echo '    default y' >> drivers/kernelsu/Kconfig
+          echo 'config KSU_SUSFS_SUS_MOUNT' >> drivers/kernelsu/Kconfig
+          echo '    bool "SuSFS hide mount"' >> drivers/kernelsu/Kconfig
+          echo '    depends on KSU_SUSFS' >> drivers/kernelsu/Kconfig
+          echo '    default y' >> drivers/kernelsu/Kconfig
+          echo 'config KSU_SUSFS_SUS_KSTAT' >> drivers/kernelsu/Kconfig
+          echo '    bool "SuSFS spoof kstat"' >> drivers/kernelsu/Kconfig
+          echo '    depends on KSU_SUSFS' >> drivers/kernelsu/Kconfig
+          echo '    default y' >> drivers/kernelsu/Kconfig
+          echo 'config KSU_SUSFS_SPOOF_UNAME' >> drivers/kernelsu/Kconfig
+          echo '    bool "SuSFS spoof uname"' >> drivers/kernelsu/Kconfig
+          echo '    depends on KSU_SUSFS' >> drivers/kernelsu/Kconfig
+          echo '    default y' >> drivers/kernelsu/Kconfig
+          echo 'config KSU_SUSFS_ENABLE_LOG' >> drivers/kernelsu/Kconfig
+          echo '    bool "SuSFS enable log"' >> drivers/kernelsu/Kconfig
+          echo '    depends on KSU_SUSFS' >> drivers/kernelsu/Kconfig
+          echo '    default y' >> drivers/kernelsu/Kconfig
+          echo 'config KSU_SUSFS_OPEN_REDIRECT' >> drivers/kernelsu/Kconfig
+          echo '    bool "SuSFS open redirect"' >> drivers/kernelsu/Kconfig
+          echo '    depends on KSU_SUSFS' >> drivers/kernelsu/Kconfig
+          echo '    default y' >> drivers/kernelsu/Kconfig
+          echo 'config KSU_SUSFS_SUS_MAP' >> drivers/kernelsu/Kconfig
+          echo '    bool "SuSFS hide map"' >> drivers/kernelsu/Kconfig
+          echo '    depends on KSU_SUSFS' >> drivers/kernelsu/Kconfig
+          echo '    default y' >> drivers/kernelsu/Kconfig
+
+          # Apply VFS patches
+          patch -p1 --ignore-whitespace --forward < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch || true
+
+          # Inject header includes
+          python3 -c "
+          for path, hdr in [
+              ('fs/exec.c', '#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif\n'),
+              ('fs/namespace.c', '#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif\n'),
+              ('fs/proc/base.c', '#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux/susfs_def.h>\n#endif\n')
+          ]:
+              with open(path, 'r') as f:
+                  c = f.read()
+              if hdr.strip() not in c:
+                  with open(path, 'w') as f:
+                      f.write(hdr + c)
+          "
+
+          # Inject missing namespace declarations
+          python3 -c "
+          with open('fs/namespace.c', 'r') as f:
+              c = f.read()
+          block = '#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif\n'
+          if 'susfs_is_current_ksu_domain' not in c and 'sysctl_mount_max' in c:
+              c = c.replace('int sysctl_mount_max', block + '\nint sysctl_mount_max')
+              with open('fs/namespace.c', 'w') as f:
+                  f.write(c)
+          "
+
+          # Decouple legacy sucompat in fs/exec.c for KSU-Next compatibility
+          python3 -c "
+          with open('fs/exec.c', 'r') as f:
+              c = f.read()
+          c = c.replace('static_branch_likely(&ksu_su_compat_enabled)', 'false')
+          with open('fs/exec.c', 'w') as f:
+              f.write(c)
+          "
+
+      - name: Configure Kernel
         working-directory: kernel
         run: |
           export PATH=$(pwd)/../clang-aosp/bin:$PATH
@@ -78,6 +130,7 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 essi_defconfig
+
           ./scripts/config --file out/.config --disable CONFIG_DEBUG_INFO_BTF
           ./scripts/config --file out/.config --enable CONFIG_KSU
           ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS
@@ -91,14 +144,58 @@ jobs:
           ./scripts/config --file out/.config --disable CONFIG_UH
           ./scripts/config --file out/.config --disable CONFIG_SECURITY_DEFEX
           ./scripts/config --file out/.config --disable CONFIG_KNOX_NCM
+
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+          echo "=== KSU & SUSFS Config Check ==="
+          grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS" out/.config
+
+      - name: Build Kernel Binary
+        working-directory: kernel
+        run: |
+          export PATH=$(pwd)/../clang-aosp/bin:$PATH
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export ARCH=arm64
+          export SUBARCH=arm64
           make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 KCFLAGS="-Wno-error" Image
+
+          echo "=== Symbol Verification ==="
+          strings out/arch/arm64/boot/Image | grep -i "susfs" | head -n 10
+          strings out/arch/arm64/boot/Image | grep -i "kernelsu" | head -n 10
 
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 -b master ak3
+          cat << 'AK_EOF' > ak3/anykernel.sh
+          ### AnyKernel3 Ramdisk Mod Script
+          ## osm0sis @ xda-developers
+
+          ### AnyKernel setup
+          properties() { '
+          kernel.string=GlowingKernel-A55
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          supported.versions=14, 15, 16
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; }
+
+          ### AnyKernel install
+          block=boot;
+          is_slot_device=auto;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+
+          . tools/ak3-core.sh;
+
+          split_boot;
+          flash_boot;
+          AK_EOF
+          sed -i 's/^          //' ak3/anykernel.sh
           cp kernel/out/arch/arm64/boot/Image ak3/
-          sed -i 's/kernel.string=.*/kernel.string=GlowingKernel-A55/' ak3/anykernel.sh
-          sed -i 's/do.devicecheck=.*/do.devicecheck=0/' ak3/anykernel.sh
           cd ak3 && zip -r9 ../A55-GlowingKernel-KSUNext-v3.4.2-SUSFS.zip *
 
       - name: Upload Flashable Kernel Zip
@@ -111,15 +208,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.event_name == 'workflow_dispatch'
         with:
-          tag_name: v3.4.2-A55-Fixed
-          name: "Galaxy A55 (SM-A556E) KernelSU-Next v3.4.2 + SuSFS (Linux 6.1.155)"
+          tag_name: v3.4.2-A55-v2
+          name: "Galaxy A55 (SM-A556E) KernelSU-Next v3.4.2 (33355) + SuSFS (Linux 6.1.155)"
           body: |
             ## Samsung Galaxy A55 5G (SM-A556E) - DeathUI 8 Elite V7 Compatible Kernel
             - **Base:** Linux 6.1.155 (Matching vendor_dlkm KMI)
-            - **Defconfig:** essi_defconfig (Exynos 1480 full platform hardware)
+            - **Defconfig:** essi_defconfig (Exynos 1480 platform drivers)
             - **Root:** KernelSU-Next v3.4.2 (Driver version 33355)
-            - **Stealth:** SuSFS v2.1.0 (Built-in)
-            - **Status:** Verified drop-in bootable for SM-A556E
+            - **Stealth:** SuSFS v2.1.0 (Built-in VFS)
           files: A55-GlowingKernel-KSUNext-v3.4.2-SUSFS.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
