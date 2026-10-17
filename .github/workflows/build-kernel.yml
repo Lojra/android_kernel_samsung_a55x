@@ -48,7 +48,7 @@ jobs:
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export ARCH=arm64
           export SUBARCH=arm64
-          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 essi_defconfig
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
           ./scripts/config --file out/.config --disable CONFIG_DEBUG_INFO_BTF
           make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 Image
 
