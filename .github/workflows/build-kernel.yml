@@ -3,6 +3,9 @@ name: Build Samsung Galaxy A55 Kernel (KSU-Next v3.4.2 + SUSFS)
 'on':
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build Galaxy A55 Kernel (Linux 6.1.155)
