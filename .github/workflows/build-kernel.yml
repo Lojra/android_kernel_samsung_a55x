@@ -1,0 +1,66 @@
+name: Build Samsung Galaxy A55 Kernel (KSU-Next v3.4.2 + SUSFS)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Galaxy A55 Kernel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          ref: A556EXXUACYIA
+          fetch-depth: 1
+
+      - name: Install Toolchain and Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev libssl-dev libelf-dev
+          mkdir -p clang-aosp
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz -O clang.tar.gz
+          tar -C clang-aosp -xzf clang.tar.gz
+          rm clang.tar.gz
+
+      - name: Integrate KernelSU-Next v3.4.2
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s v3.4.2
+
+      - name: Integrate SUSFS Patches
+        run: |
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-6.1 susfs
+          cp -r susfs/kernel_patches/fs/* fs/
+          cp -r susfs/kernel_patches/include/linux/* include/linux/
+
+      - name: Build Kernel Image
+        run: |
+          export PATH=$(pwd)/clang-aosp/bin:$PATH
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export ARCH=arm64
+          export SUBARCH=arm64
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 essi_defconfig
+          make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 Image
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3 -b master ak3
+          cp out/arch/arm64/boot/Image ak3/
+          sed -i 's/kernel.string=.*/kernel.string=GlowingKernel-A55/' ak3/anykernel.sh
+          sed -i 's/do.devicecheck=.*/do.devicecheck=0/' ak3/anykernel.sh
+          cd ak3 && zip -r9 ../A55-GlowingKernel-KSUNext-v3.4.2-SUSFS.zip *
+
+      - name: Upload Flashable Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: A55-GlowingKernel-KSUNext-v3.4.2-SUSFS
+          path: A55-GlowingKernel-KSUNext-v3.4.2-SUSFS.zip
