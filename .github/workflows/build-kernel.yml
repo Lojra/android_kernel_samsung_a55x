@@ -49,7 +49,7 @@ jobs:
           cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/
 
           # Add susfs.o compilation rule to fs/Makefile
-          sed -i '/obj-y.*:=/a obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+          echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
 
           # Inject SuSFS Kconfig symbols into drivers/kernelsu/Kconfig
           echo 'config KSU_SUSFS' >> drivers/kernelsu/Kconfig
@@ -166,35 +166,7 @@ jobs:
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 -b master ak3
-          cat << 'AK_EOF' > ak3/anykernel.sh
-          ### AnyKernel3 Ramdisk Mod Script
-          ## osm0sis @ xda-developers
-
-          ### AnyKernel setup
-          properties() { '
-          kernel.string=GlowingKernel-A55
-          do.devicecheck=0
-          do.modules=0
-          do.systemless=1
-          do.cleanup=1
-          do.cleanuponabort=0
-          supported.versions=14, 15, 16
-          supported.patchlevels=
-          supported.vendorpatchlevels=
-          '; }
-
-          ### AnyKernel install
-          block=boot;
-          is_slot_device=auto;
-          ramdisk_compression=auto;
-          patch_vbmeta_flag=auto;
-
-          . tools/ak3-core.sh;
-
-          split_boot;
-          flash_boot;
-          AK_EOF
-          sed -i 's/^          //' ak3/anykernel.sh
+          echo "IyMjIEFueUtlcm5lbDMgUmFtZGlzayBNb2QgU2NyaXB0CiMjIG9zbTBzaXMgQCB4ZGEtZGV2ZWxvcGVycwoKIyMjIEFueUtlcm5lbCBzZXR1cAojIGdsb2JhbCBwcm9wZXJ0aWVzCnByb3BlcnRpZXMoKSB7ICcKa2VybmVsLnN0cmluZz1HS0lfS2VybmVsCmRvLmRldmljZWNoZWNrPTAKZG8ubW9kdWxlcz0wCmRvLnN5c3RlbWxlc3M9MQpkby5jbGVhbnVwPTEKZG8uY2xlYW51cG9uYWJvcnQ9MApzdXBwb3J0ZWQudmVyc2lvbnM9CnN1cHBvcnRlZC52ZXJzaW9ucz0xNCwgMTUsIDE2CnN1cHBvcnRlZC5wYXRjaGxldmVscz0Kc3VwcG9ydGVkLnZlbmRvcnBhdGNobGV2ZWxzPQonOyB9ICMgZW5kIHByb3BlcnRpZXMKCgojIyMgQW55S2VybmVsIGluc3RhbGwKIyBib290IHNoZWxsIHZhcmlhYmxlcwpibG9jaz1ib290CmlzX3Nsb3RfZGV2aWNlPWF1dG8KcmFtZGlza19jb21wcmVzc2lvbj1hdXRvCnBhdGNoX3ZibWV0YV9mbGFnPWF1dG8KCiMgaW1wb3J0IGZ1bmN0aW9ucy92YXJpYWJsZXMgYW5kIHNldHVwIHBhdGNoaW5nIC0gc2VlIGZvciByZWZlcmVuY2UgKERPIE5PVCBSRU1PVkUpCi4gdG9vbHMvYWszLWNvcmUuc2gKCiMgYm9vdCBpbnN0YWxsCmlmIFsgLUwgIi9kZXYvYmxvY2svYm9vdGRldmljZS9ieS1uYW1lL2luaXRfYm9vdF9hIiAtbyAtTCAiL2Rldi9ibG9jay9ieS1uYW1lL2luaXRfYm9vdF9hIiBdIHx8IFsgLUwgIi9kZXYvYmxvY2svYm9vdGRldmljZS9ieS1uYW1lL2luaXRfYm9vdCIgLW8gLUwgIi9kZXYvYmxvY2svYnktbmFtZS9pbml0X2Jvb3QiIF07IHRoZW4KICAgIHNwbGl0X2Jvb3QgIyBmb3IgZGV2aWNlcyB3aXRoIGluaXRfYm9vdCByYW1kaXNrCiAgICBmbGFzaF9ib290ICMgZm9yIGRldmljZXMgd2l0aCBpbml0X2Jvb3QgcmFtZGlzawplbHNlCiAgICBkdW1wX2Jvb3QgIyB1c2Ugc3BsaXRfYm9vdCB0byBza2lwIHJhbWRpc2sgdW5wYWNrLCBlLmcuIGZvciBkZXZpY2VzIHdpdGggaW5pdF9ib290IHJhbWRpc2sKICAgIHdyaXRlX2Jvb3QgIyB1c2UgZmxhc2hfYm9vdCB0byBza2lwIHJhbWRpc2sgcmVwYWNrLCBlLmcuIGZvciBkZXZpY2VzIHdpdGggaW5pdF9ib290IHJhbWRpc2sKZmkKIyMgZW5kIGJvb3QgaW5zdGFsbAoNCg==" | base64 -d > ak3/anykernel.sh
           cp kernel/out/arch/arm64/boot/Image ak3/
           cd ak3 && zip -r9 ../A55-GlowingKernel-KSUNext-v3.4.2-SUSFS.zip *
 
