@@ -35,7 +35,7 @@ jobs:
           cd kernel
           rm -f android/abi_gki_protected_exports_*
 
-      - name: Integrate KernelSU-Next (dev-susfs)
+      - name: Integrate KernelSU-Next (dev-susfs) & SuSFS Headers
         working-directory: kernel
         run: |
           git clone --depth=1 -b dev-susfs https://github.com/pershoot/KernelSU-Next.git KernelSU-Next
@@ -43,6 +43,13 @@ jobs:
           ln -sf ../KernelSU-Next/kernel kernelsu
           printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> Makefile
           sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' Kconfig
+          cd ..
+
+          git clone --depth=1 -b gki-android14-6.1 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
+          cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/
+          cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/
+          cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/
+          echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
 
       - name: Configure Kernel
         working-directory: kernel
