@@ -20,13 +20,13 @@ jobs:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
-          ref: A556EXXUACYIA
+          ref: lineage-23.2
           fetch-depth: 1
 
       - name: Install Toolchain and Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev libssl-dev libelf-dev
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev libssl-dev libelf-dev dwarves pahole
           mkdir -p clang-aosp
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz -O clang.tar.gz
           tar -C clang-aosp -xzf clang.tar.gz
@@ -49,6 +49,7 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 essi_defconfig
+          ./scripts/config --file out/.config --disable CONFIG_DEBUG_INFO_BTF
           make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 Image
 
       - name: Package with AnyKernel3
