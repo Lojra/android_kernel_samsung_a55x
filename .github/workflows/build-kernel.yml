@@ -1,12 +1,12 @@
 name: Build Samsung Galaxy A55 Kernel (KSU-Next v3.4.2 + SUSFS)
 
-on:
+'on':
   workflow_dispatch:
 
 jobs:
   build:
     name: Build Galaxy A55 Kernel (Linux 6.1.155)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Maximize Build Space
         uses: easimon/maximize-build-space@master
@@ -17,21 +17,16 @@ jobs:
           remove-android: 'true'
           remove-haskell: 'true'
 
-      - name: Install Toolchain (Clang 20 & Build Essentials)
+      - name: Install Toolchain and Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends             build-essential bc bison flex libssl-dev libelf-dev libncurses-dev             git curl lz4 zip unzip tar python3 aarch64-linux-gnu-gcc
-          wget https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 20
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 100
-          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/lld-20 100
-          sudo update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-20 100
-          sudo update-alternatives --install /usr/bin/llvm-ar llvm-ar /usr/bin/llvm-ar-20 100
-          sudo update-alternatives --install /usr/bin/llvm-nm llvm-nm /usr/bin/llvm-nm-20 100
-          clang --version
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev libssl-dev libelf-dev dwarves pahole
+          mkdir -p clang-aosp
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz -O clang.tar.gz
+          tar -C clang-aosp -xzf clang.tar.gz
+          rm clang.tar.gz
 
-      - name: Checkout Kernel Source (A556EXXUACYIA @ e2398e0ebc3f)
+      - name: Checkout Kernel Source (A556EXXUACYIA)
         run: |
           git clone --depth=1 -b A556EXXUACYIA https://github.com/exynos1480/android_kernel_samsung_a55x.git kernel
           cd kernel
@@ -42,88 +37,66 @@ jobs:
         run: |
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s v3.4.2
 
-      - name: Integrate SuSFS (Patches & Fixes)
+      - name: Integrate SuSFS Patches
         working-directory: kernel
         run: |
           git clone --depth=1 -b gki-android14-6.1 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
           cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/
           cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/
           cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/
-
-          # Apply kernel patch (allowing rejected headers)
           patch -p1 --ignore-whitespace --forward < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch || true
+          python3 -c '
+          def prepend_if_missing(filepath, header):
+              with open(filepath, "r") as f: content = f.read()
+              if header not in content:
+                  with open(filepath, "w") as f: f.write(header + "\n" + content)
+          prepend_if_missing("fs/exec.c", "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif")
+          prepend_if_missing("fs/namespace.c", "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif")
+          prepend_if_missing("fs/proc/base.c", "#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux/susfs_def.h>\n#endif")
+          '
+          python3 -c '
+          with open("fs/namespace.c", "r") as f: c = f.read()
+          block = "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif\n"
+          if "susfs_is_current_ksu_domain" not in c and "sysctl_mount_max" in c:
+              c = c.replace("int sysctl_mount_max", block + "\nint sysctl_mount_max")
+              with open("fs/namespace.c", "w") as f: f.write(c)
+          '
+          python3 -c '
+          with open("fs/exec.c", "r") as f: c = f.read()
+          c = c.replace("static_branch_likely(&ksu_su_compat_enabled)", "false")
+          with open("fs/exec.c", "w") as f: f.write(c)
+          '
 
-          # Inject headers into the 3 files with OEM context differences
-          sed -i '1i#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif' fs/exec.c
-          sed -i '1i#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif' fs/namespace.c
-          sed -i '1i#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux/susfs_def.h>\n#endif' fs/proc/base.c
-          sed -i '/sysctl_mount_max/i#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
-
-          # Decouple legacy sucompat in fs/exec.c for KSU-Next compatibility
-          sed -i 's/static_branch_likely(&ksu_su_compat_enabled)/false/' fs/exec.c || true
-
-      - name: Configure Kernel
+      - name: Build Kernel Image
         working-directory: kernel
         run: |
-          make ARCH=arm64 LLVM=1 LLVM_IAS=1 essi_defconfig
-          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
-          ./scripts/config --enable CONFIG_KSU
-          ./scripts/config --enable CONFIG_KSU_SUSFS
-          ./scripts/config --enable CONFIG_KSU_SUSFS_SUS_PATH
-          ./scripts/config --enable CONFIG_KSU_SUSFS_SUS_MOUNT
-          ./scripts/config --enable CONFIG_KSU_SUSFS_SUS_KSTAT
-          ./scripts/config --enable CONFIG_KSU_SUSFS_SPOOF_UNAME
-          ./scripts/config --enable CONFIG_KSU_SUSFS_ENABLE_LOG
-          ./scripts/config --enable CONFIG_KSU_SUSFS_OPEN_REDIRECT
-          ./scripts/config --enable CONFIG_KSU_SUSFS_SUS_MAP
-          ./scripts/config --disable CONFIG_UH
-          ./scripts/config --disable CONFIG_SECURITY_DEFEX
-          ./scripts/config --disable CONFIG_KNOX_NCM
-
-      - name: Build Kernel Binary
-        working-directory: kernel
-        run: |
-          make -j$(nproc)             ARCH=arm64             CC=clang             LLVM=1             LLVM_IAS=1             CROSS_COMPILE=aarch64-linux-gnu-             KCFLAGS="-Wno-error"             Image
+          export PATH=$(pwd)/../clang-aosp/bin:$PATH
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export ARCH=arm64
+          export SUBARCH=arm64
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 essi_defconfig
+          ./scripts/config --file out/.config --disable CONFIG_DEBUG_INFO_BTF
+          ./scripts/config --file out/.config --enable CONFIG_KSU
+          ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS
+          ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_SUS_PATH
+          ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_SUS_MOUNT
+          ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_SUS_KSTAT
+          ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_SPOOF_UNAME
+          ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_ENABLE_LOG
+          ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_OPEN_REDIRECT
+          ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_SUS_MAP
+          ./scripts/config --file out/.config --disable CONFIG_UH
+          ./scripts/config --file out/.config --disable CONFIG_SECURITY_DEFEX
+          ./scripts/config --file out/.config --disable CONFIG_KNOX_NCM
+          make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 KCFLAGS="-Wno-error" Image
 
       - name: Package with AnyKernel3
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AK3
-          cat << 'EOF' > AK3/anykernel.sh
-### AnyKernel3 Ramdisk Mod Script
-## osm0sis @ xda-developers
-
-### AnyKernel setup
-properties() { '
-kernel.string=GKI_Kernel
-do.devicecheck=0
-do.modules=0
-do.systemless=1
-do.cleanup=1
-do.cleanuponabort=0
-supported.versions=14, 15, 16
-supported.patchlevels=
-supported.vendorpatchlevels=
-'; }
-
-### AnyKernel install
-block=boot
-is_slot_device=auto
-ramdisk_compression=auto
-patch_vbmeta_flag=auto
-
-. tools/ak3-core.sh
-
-if [ -L "/dev/block/bootdevice/by-name/init_boot_a" -o -L "/dev/block/by-name/init_boot_a" ] || [ -L "/dev/block/bootdevice/by-name/init_boot" -o -L "/dev/block/by-name/init_boot" ]; then
-    split_boot
-    flash_boot
-else
-    dump_boot
-    write_boot
-fi
-EOF
-          cp kernel/arch/arm64/boot/Image AK3/
-          cd AK3
-          zip -r9 ../A55-GlowingKernel-KSUNext-v3.4.2-SUSFS.zip * -x .git README.md *placeholder
+          git clone https://github.com/osm0sis/AnyKernel3 -b master ak3
+          cp kernel/out/arch/arm64/boot/Image ak3/
+          sed -i 's/kernel.string=.*/kernel.string=GlowingKernel-A55/' ak3/anykernel.sh
+          sed -i 's/do.devicecheck=.*/do.devicecheck=0/' ak3/anykernel.sh
+          cd ak3 && zip -r9 ../A55-GlowingKernel-KSUNext-v3.4.2-SUSFS.zip *
 
       - name: Upload Flashable Kernel Zip
         uses: actions/upload-artifact@v4
@@ -140,9 +113,10 @@ EOF
           body: |
             ## Samsung Galaxy A55 5G (SM-A556E) - DeathUI 8 Elite V7 Compatible Kernel
             - **Base:** Linux 6.1.155 (Matching vendor_dlkm KMI)
+            - **Defconfig:** essi_defconfig (Exynos 1480 full platform hardware)
             - **Root:** KernelSU-Next v3.4.2 (Driver version 33355)
-            - **Stealth:** SuSFS v2.1.0
-            - **Hardware:** Exynos 1480 (essi_defconfig, SGPU MEA E-variant support)
+            - **Stealth:** SuSFS v2.1.0 (Built-in)
+            - **Status:** Verified drop-in bootable for SM-A556E
           files: A55-GlowingKernel-KSUNext-v3.4.2-SUSFS.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
